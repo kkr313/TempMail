@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Disposable Email with Message Viewer</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f9;
+            margin: 0;
+            padding: 20px;
+            color: #333;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: auto;
+            text-align: center;
+        }
+
+        h1 {
+            color: #4caf50;
+        }
+
+        input[type="text"] {
+            padding: 10px;
+            width: 70%;
+            margin: 10px 0;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+
+        button {
+            padding: 10px 15px;
+            background-color: #4caf50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+        }
+
+        button:hover {
+            background-color: #45a049;
+        }
+
+        .error-message {
+            color: red;
+            margin-top: 10px;
+            font-size: 0.9em;
+        }
+
+        .email-container {
+            display: flex;
+            flex: 1;
+            margin-top: 20px;
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            overflow: hidden;
+        }
+
+        .email-list {
+            width: 40%;
+            border-right: 1px solid #ddd;
+            overflow-y: auto;
+            background-color: #f9f9f9;
+        }
+
+        .email-list-item {
+            padding: 10px;
+            border-bottom: 1px solid #ddd;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+        }
+
+        .email-list-item.unread {
+            font-weight: bold;
+        }
+
+        .email-list-item:hover {
+            background-color: #f0f0f0;
+        }
+
+        .email-list-item.read {
+            background-color: #e7f4e7;
+            font-weight: normal;
+        }
+
+        .email-details {
+            width: 60%;
+            padding: 20px;
+            overflow-y: auto;
+        }
+
+        .email-details p {
+            margin: 10px 0;
+        }
+
+        .email-time {
+            font-size: 0.85em;
+            color: #666;
+        }
+
+        .email-code {
+            font-weight: bold;
+            color: #d9534f;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Disposable Email</h1>
+        <input type="text" id="customPrefix" placeholder="Enter your custom prefix (optional)">
+        <button id="generateEmail">Generate Email</button>
+        <p id="generatedEmail">Your email will appear here.</p>
+        <button id="copyEmail" style="display: none;">Copy Email</button>
+        <p id="errorMessage" class="error-message" style="display: none;"></p>
+    </div>
+
+    <div class="email-container">
+        <div class="email-list" id="emailList">No emails yet.</div>
+        <div class="email-details" id="emailDetails">
+            <h3>Select an email to view details</h3>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = 'https://api.mail.tm';
+        let authToken = null;
+        let messageInterval = null;
+
+        async function getValidDomains() {
+            const response = await fetch(`${API_URL}/domains`);
+            const domains = await response.json();
+            return domains['hydra:member'].map(domain => domain.domain);
+        }
+
+        async function createAccount(email, password) {
+            const response = await fetch(`${API_URL}/accounts`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ address: email, password }),
+            });
+
+            if (response.status === 422) {
+                const error = await response.json();
+                if (error.violations && error.violations[0].propertyPath === 'address') {
+                    throw new Error('This email address is already in use.');
+                }
+            }
+
+            return response.ok ? await response.json() : null;
+        }
+
+        async function authenticate(email, password) {
+            const response = await fetch(`${API_URL}/token`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ address: email, password }),
+            });
+            return response.ok ? (await response.json()).token : null;
+        }
+
+        async function fetchMessages() {
+            const response = await fetch(`${API_URL}/messages`, {
+                headers: {
+                    Authorization: `Bearer ${authToken}`,
+                },
+            });
+            const messages = await response.json();
+            return messages['hydra:member'];
+        }
+
+        function renderMessages(messages) {
+            const emailList = document.getElementById('emailList');
+            emailList.innerHTML = '';
+
+            if (messages.length === 0) {
+                emailList.innerText = 'No emails yet.';
+                return;
+            }
+
+            messages.forEach(message => {
+                const item = document.createElement('div');
+                item.className = `email-list-item ${message.seen ? 'read' : 'unread'}`;
+                item.innerHTML = `
+                    <strong>${message.subject}</strong>
+                    <div class="email-time">${new Date(message.createdAt).toLocaleString()}</div>
+                `;
+
+                item.addEventListener('click', async () => {
+                    item.classList.remove('unread');
+                    item.classList.add('read');
+                    displayMessage(message);
+                });
+
+                emailList.appendChild(item);
+            });
+        }
+
+        function displayMessage(message) {
+            const emailDetails = document.getElementById('emailDetails');
+            const codeMatch = message.intro.match(/CODE IS: (\d+)/);
+            const boldCode = codeMatch ? `<span class="email-code">${codeMatch[1]}</span>` : 'N/A';
+            const formattedIntro = message.intro.replace(/CODE IS: \d+/, `CODE IS: ${boldCode}`);
+
+            emailDetails.innerHTML = `
+                <h3>${message.subject}</h3>
+                <p><strong>From:</strong> ${message.from.address}</p>
+                <p><strong>Intro:</strong> ${formattedIntro}</p>
+                <p><strong>Full Message:</strong> <a href="${API_URL}${message.downloadUrl}" target="_blank">Download Full Message</a></p>
+            `;
+        }
+
+        document.getElementById('generateEmail').addEventListener('click', async () => {
+            const customPrefix = document.getElementById('customPrefix').value.trim();
+            const generatedEmail = document.getElementById('generatedEmail');
+            const copyEmail = document.getElementById('copyEmail');
+            const emailList = document.getElementById('emailList');
+            const emailDetails = document.getElementById('emailDetails');
+            const errorMessage = document.getElementById('errorMessage');
+
+            // Clear previous data
+            emailList.innerHTML = 'No emails yet.';
+            emailDetails.innerHTML = '<h3>Select an email to view details</h3>';
+            errorMessage.style.display = 'none';
+
+            if (messageInterval) clearInterval(messageInterval);
+
+            const domains = await getValidDomains();
+            if (!domains.length) {
+                generatedEmail.innerText = 'No valid domains available.';
+                return;
+            }
+
+            const randomDomain = domains[Math.floor(Math.random() * domains.length)];
+            const prefix = customPrefix || Math.random().toString(36).substring(2, 10);
+            const email = `${prefix}@${randomDomain}`;
+            const password = 'securePassword123';
+
+            try {
+                await createAccount(email, password);
+                authToken = await authenticate(email, password);
+
+                generatedEmail.innerText = `Generated Email: ${email}`;
+                copyEmail.style.display = 'inline-block';
+
+                copyEmail.onclick = () => {
+                    navigator.clipboard.writeText(email);
+                    alert('Email copied to clipboard!');
+                };
+
+                messageInterval = setInterval(async () => {
+                    const messages = await fetchMessages();
+                    renderMessages(messages);
+                }, 5000);
+            } catch (error) {
+                errorMessage.innerText = error.message;
+                errorMessage.style.display = 'block';
+            }
+        });
+    </script>
+</body>
+</html>
